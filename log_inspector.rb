@@ -33,7 +33,6 @@ class LogInspector < SimpleWorker::Base
           notification.save!
           notification.email_addresses.each do |recipient|
             puts "Notifying " + recipient + " of " + status.status_name
-=begin
             Pony.mail(
               :to => recipient, 
               :from => 'rubymailer@psship.com', 
@@ -44,7 +43,6 @@ class LogInspector < SimpleWorker::Base
                 :address => 'smtp.psship.com'
               }
             )
-=end
           end
         end
       else
@@ -88,15 +86,13 @@ class LogInspector < SimpleWorker::Base
     @statuses = LogStatus.find(:all)
     @statuses.each do |status|
 
-      # A status may only contain ONE wildcard search string - otherwise there'd be
-      # ambiguity as far as which success strings correspond with which failure strings.
       # If there is a wildcard search string in the begin strings but not in the end
       # strings (or vice versa) the wildcard will be treated as regular literal text.
       wildcard_starts = get_wildcard_patterns(status.search_string_begin)
       wildcard_endings = get_wildcard_patterns(status.search_string_end)
 
       if wildcard_starts.count > 1 or wildcard_endings.count > 1
-        raise "A status may not contain multiple wildcard search strings in either the beginning or ending string."
+        raise "Ambiguous wildcard - A status may not contain multiple wildcard search patterns."
       end
     
       unless wildcard_starts.empty? or wildcard_endings.empty?
@@ -138,7 +134,7 @@ class LogInspector < SimpleWorker::Base
         status.search_string_end.delete(wildcard_end)
       end
    
-      # if, after removing wildcard patterns, our array is empty, don't bother searching the logs 
+      # if, after removing wildcard patterns, our array still has elements, continue 
       if not (status.search_string_begin.empty? and status.search_string_end.empty?)
         enabled_times = get_event_times(status.search_string_begin)
         disabled_times = get_event_times(status.search_string_end)

@@ -7,6 +7,9 @@ describe LogInspector do
     Loggly.any_instance.stub(:search) do |query|
       {'data' => @mock_log.select {|log_entry| Regexp.new(query.sub('[*]', '.*?')) =~ log_entry['text'] } }
     end
+    @log_inspector = LogInspector.new
+    @log_inspector.config = YAML.load_file('../config.yml')
+    LogInspector::LogNotification.stub(:find).and_return([])
   end
 
   describe "for standard search strings" do
@@ -24,7 +27,7 @@ describe LogInspector do
           {'timestamp' => 5.minutes.ago.to_s, 'text' => 'Not a matching log event' }
         ]
         @test_status.active = true
-        LogInspector.new
+        @log_inspector.run
         @test_status.active.should == false
       end
     end
@@ -40,7 +43,7 @@ describe LogInspector do
 
       it "sets the SimpleDb status to active if it was previously inactive" do
         @test_status.active = false
-        LogInspector.new
+        @log_inspector.run
         @test_status.active.should == true
       end
 
@@ -48,7 +51,7 @@ describe LogInspector do
         @test_status.active = true
         @test_status.should_not_receive(:active=)
         @test_status.should_not_receive(:save!)
-        LogInspector.new
+        @log_inspector.run
       end
     end
 
@@ -63,7 +66,7 @@ describe LogInspector do
 
       it "sets the SimpleDb status to inactive if it was previously active" do
         @test_status.active = true
-        LogInspector.new
+        @log_inspector.run
         @test_status.active.should == false
       end
 
@@ -71,7 +74,7 @@ describe LogInspector do
         @test_status.active = false
         @test_status.should_not_receive(:active=)
         @test_status.should_not_receive(:save!)
-        LogInspector.new
+        @log_inspector.run
       end
     end
   end
@@ -87,12 +90,12 @@ describe LogInspector do
 
     it "throws an exception if you try to use multiple wildcard patterns in the starting patterns" do
       @test_status.stub(:search_string_begin).and_return ['Test for [*]:success', 'Another wildcard[*]']
-      lambda { LogInspector.new }.should raise_error
+      lambda { @log_inspector.run }.should raise_error
     end
 
     it "throws an exception if you try to use multiple wildcard patterns in the ending patterns" do
       @test_status.stub(:search_string_end).and_return ['Test for [*]:success', 'Another wildcard[*]']
-      lambda { LogInspector.new }.should raise_error
+      lambda { @log_inspector.run }.should raise_error
     end
     
     it "reports success when there are no failures in the log" do
@@ -102,7 +105,7 @@ describe LogInspector do
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
-      LogInspector.new
+      @log_inspector.run
       @test_status.active.should == true
     end
 
@@ -113,7 +116,7 @@ describe LogInspector do
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
-      LogInspector.new
+      @log_inspector.run
       @test_status.active.should == true
     end
 
@@ -124,7 +127,7 @@ describe LogInspector do
       ]
       @test_status.active = true
       @test_status.should_receive(:save!)
-      LogInspector.new
+      @log_inspector.run
       @test_status.active.should == false
     end
 
@@ -135,7 +138,7 @@ describe LogInspector do
       ]
       @test_status.active = true
       @test_status.should_receive(:save!)
-      LogInspector.new
+      @log_inspector.run
       @test_status.active.should == false
     end
 
@@ -148,7 +151,7 @@ describe LogInspector do
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
-      LogInspector.new
+      @log_inspector.run
       @test_status.active.should == true
     end
 
@@ -161,7 +164,7 @@ describe LogInspector do
       ]
       @test_status.active = true
       @test_status.should_receive(:save!)
-      LogInspector.new
+      @log_inspector.run
       @test_status.active.should == false
     end 
   end
