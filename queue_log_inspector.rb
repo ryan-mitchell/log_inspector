@@ -11,4 +11,6 @@ end
 
 worker = LogInspector.new
 worker.config = conf
-worker.schedule(:run_every => 300, :start_at => Time.now)
+worker.run_local
+#worker.queue
+#worker.schedule(:run_every => 300, :start_at => Time.now)

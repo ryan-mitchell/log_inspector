@@ -18,15 +18,26 @@ describe LogInspector do
       @test_status = LogInspector::LogStatus.new
       @test_status.stub(:search_string_begin).and_return ['Test:success']
       @test_status.stub(:search_string_end).and_return ['Test:failure']
+      @test_status.stub(:save!)
       LogInspector::LogStatus.should_receive(:find).and_return([@test_status])
     end
 
     describe "when the log has no matching results" do
-      it "should default to an inactive status" do
+
+      before(:each) do
         @mock_log = [
           {'timestamp' => 5.minutes.ago.to_s, 'text' => 'Not a matching log event' }
         ]
+      end
+
+      it "should leave an active record in an active state" do
         @test_status.active = true
+        @log_inspector.run
+        @test_status.active.should == true
+      end
+
+      it "should leave an inactive record in an inactive state" do
+        @test_status.active = false
         @log_inspector.run
         @test_status.active.should == false
       end
@@ -43,6 +54,12 @@ describe LogInspector do
 
       it "sets the SimpleDb status to active if it was previously inactive" do
         @test_status.active = false
+        @log_inspector.run
+        @test_status.active.should == true
+      end
+
+      it "sets the SimpleDb status to active if it has never been set before" do
+        @test_status.active = nil
         @log_inspector.run
         @test_status.active.should == true
       end
@@ -70,6 +87,12 @@ describe LogInspector do
         @test_status.active.should == false
       end
 
+      it "sets the SimpleDb status to inactive if it has never been set before", :failing => true do
+        @test_status.active = nil
+        @log_inspector.run
+        @test_status.active.should == false
+      end
+
       it "does not change the SimpleDb status if it was already inactive" do
         @test_status.active = false
         @test_status.should_not_receive(:active=)
@@ -85,6 +108,7 @@ describe LogInspector do
       @test_status = LogInspector::LogStatus.new
       @test_status.stub(:search_string_begin).and_return ['Test for [*]:success']
       @test_status.stub(:search_string_end).and_return ['Test for [*]:failure']
+      @test_status.stub(:save!)
       LogInspector::LogStatus.should_receive(:find).and_return([@test_status])
     end 
 
@@ -167,5 +191,30 @@ describe LogInspector do
       @log_inspector.run
       @test_status.active.should == false
     end 
+
+    it "reports failure when there are two different clients and one is failing" do
+      @mock_log = [
+        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
+        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:failure' },
+      ]
+      @test_status.active = true
+      @test_status.should_receive(:save!)
+      @log_inspector.run
+      @test_status.active.should == false
+    end
+  end
+
+  describe "when saving a status object" do
+
+    it "throws an error if saved with multiple beginning wildcards" do
+      @test_status = LogInspector::LogStatus.new(:search_string_begin => ['Wildcard [*] 1', 'Another [*] Wildcard'])
+      lambda { @test_status.save! }.should raise_error
+    end
+
+    it "throws an error if saved with multiple ending wildcards" do
+      @test_status = LogInspector::LogStatus.new(:search_string_end => ['Wildcard [*] 1', 'Another [*] Wildcard'])
+      lambda { @test_status.save! }.should raise_error
+    end
+
   end
 end
