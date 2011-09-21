@@ -1,5 +1,5 @@
 require '../log_inspector'
-require 'active_support/all'
+require 'active_support/core_ext'
 
 describe LogInspector do
 
@@ -30,20 +30,20 @@ describe LogInspector do
         ]
       end
 
-      it "should leave an active record in an active state" do
+      it "should leave an up record in an up state" do
         @test_status.active = true
         @log_inspector.run
         @test_status.active.should == true
       end
 
-      it "should leave an inactive record in an inactive state" do
+      it "should leave a down record in a down state" do
         @test_status.active = false
         @log_inspector.run
         @test_status.active.should == false
       end
     end
 
-    describe "when the log finds that the most recent event is a positive" do
+    describe "when the log finds that the most recent event is an up event" do
    
       before(:each) do
         @mock_log = [
@@ -52,19 +52,19 @@ describe LogInspector do
         ]
       end 
 
-      it "sets the SimpleDb status to active if it was previously inactive" do
+      it "sets the SimpleDb status to up if it was previously down" do
         @test_status.active = false
         @log_inspector.run
         @test_status.active.should == true
       end
 
-      it "sets the SimpleDb status to active if it has never been set before" do
+      it "sets the SimpleDb status to up if it has never been set before" do
         @test_status.active = nil
         @log_inspector.run
         @test_status.active.should == true
       end
 
-      it "does not change the SimpleDb status if it was already active" do
+      it "does not change the SimpleDb status if it was already up" do
         @test_status.active = true
         @test_status.should_not_receive(:active=)
         @test_status.should_not_receive(:save!)
@@ -72,7 +72,7 @@ describe LogInspector do
       end
     end
 
-    describe "when the log finds that the most recent event is a failure" do
+    describe "when the log finds that the most recent event is a down event" do
 
       before(:each) do
         @mock_log = [
@@ -81,19 +81,19 @@ describe LogInspector do
         ]
       end 
 
-      it "sets the SimpleDb status to inactive if it was previously active" do
+      it "sets the SimpleDb status to down if it was previously up" do
         @test_status.active = true
         @log_inspector.run
         @test_status.active.should == false
       end
 
-      it "sets the SimpleDb status to inactive if it has never been set before", :failing => true do
+      it "sets the SimpleDb status to down if it has never been set before" do
         @test_status.active = nil
         @log_inspector.run
         @test_status.active.should == false
       end
 
-      it "does not change the SimpleDb status if it was already inactive" do
+      it "does not change the SimpleDb status if it was already down" do
         @test_status.active = false
         @test_status.should_not_receive(:active=)
         @test_status.should_not_receive(:save!)
@@ -102,27 +102,54 @@ describe LogInspector do
     end
   end
 
-  describe "when wildcard search strings are used" do
+  describe "when wildcard patterns are used" do
 
     before(:each) do
       @test_status = LogInspector::LogStatus.new
       @test_status.stub(:search_string_begin).and_return ['Test for [*]:success']
       @test_status.stub(:search_string_end).and_return ['Test for [*]:failure']
-      @test_status.stub(:save!)
-      LogInspector::LogStatus.should_receive(:find).and_return([@test_status])
+      @client_status = LogInspector::LogStatus.new
+      @client_status.stub(:search_string_begin).and_return ['Test for [*]:success']
+      @client_status.stub(:search_string_end).and_return ['Test for [*]:failure']
+      @client_status.stub(:matched).and_return "Client1"
+      LogInspector::LogStatus.any_instance.stub(:save!)
+      LogInspector::LogStatus.should_receive(:find).and_return([@test_status, @client_status])
+      LogInspector::LogStatus.should_receive(:where).any_number_of_times.and_return {|query| query == "matched = 'Client1'" ? [@client_status] : [] }
     end 
 
-    it "throws an exception if you try to use multiple wildcard patterns in the starting patterns" do
-      @test_status.stub(:search_string_begin).and_return ['Test for [*]:success', 'Another wildcard[*]']
-      lambda { @log_inspector.run }.should raise_error
+    it "creates additional status rows for each new match of the wildcard pattern" do
+      @mock_log = [
+        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
+        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:success' }     
+      ]
+      @fake_status = LogInspector::LogStatus.new
+      LogInspector::LogStatus.should_receive(:new).once.and_return(@fake_status) # 1 new status should be created, the other one already exists
+      @test_status.should_receive(:save!)
+      @log_inspector.run
     end
 
-    it "throws an exception if you try to use multiple wildcard patterns in the ending patterns" do
-      @test_status.stub(:search_string_end).and_return ['Test for [*]:success', 'Another wildcard[*]']
-      lambda { @log_inspector.run }.should raise_error
+    it "correctly compares the most recent success to the most recent failure" do
+      @mock_log = [
+        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
+        { 'timestamp' => 7.minutes.ago.to_s, 'text' => 'Test for Client1:failure' },
+        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client1:success' }     
+      ]
+      @test_status.active = false
+      @test_status.should_receive(:save!)
+      @log_inspector.run
+      @test_status.active.should == true
     end
-    
-    it "reports success when there are no failures in the log" do
+
+    it "updates an existing row for each match of the wildcard pattern", :failing => true do
+      @mock_log = [
+        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
+        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:success' }     
+      ]
+      @client_status.should_receive(:save!)
+      @log_inspector.run
+    end
+
+    it "sets status to up when there are no down events in the log" do
       @mock_log = [
         { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
         { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:success' }     
@@ -133,7 +160,31 @@ describe LogInspector do
       @test_status.active.should == true
     end
 
-    it "reports success when there is one client which has a most recent success" do
+    it "works correctly when there is additional text in the log entry" do
+      @mock_log = [
+        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success and more text' },
+        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:success and more text' }     
+      ]
+      @test_status.active = false
+      @test_status.should_receive(:save!)
+      @log_inspector.run
+      @test_status.active.should == true
+    end
+
+    it "works correctly when the wildcard ends the pattern" do
+      @test_status.stub(:search_string_begin).and_return ['Test for success:[*]']
+      @test_status.stub(:search_string_end).and_return ['Test for failure:[*]']
+      @mock_log = [
+        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for success:Client1' },
+        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for success:Client2' }     
+      ]
+      @test_status.active = false
+      @test_status.should_receive(:save!)
+      @log_inspector.run
+      @test_status.active.should == true
+    end
+
+    it "sets status to up when there is one client which has a most recent up event" do
       @mock_log = [
         { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
         { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client1:failure' }     
@@ -144,7 +195,7 @@ describe LogInspector do
       @test_status.active.should == true
     end
 
-    it "reports failure when the are no successes in the log" do
+    it "sets status to down when the are no up events in the log" do
       @mock_log = [
         { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:failure' },
         { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:failure' }     
@@ -155,7 +206,7 @@ describe LogInspector do
       @test_status.active.should == false
     end
 
-    it "reports failure when there is one client which has a most recent failure" do
+    it "sets status to down when there is one client which has a most recent down event" do
       @mock_log = [
         { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:failure' },
         { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client1:success' }     
@@ -166,7 +217,7 @@ describe LogInspector do
       @test_status.active.should == false
     end
 
-    it "reports success when there is a mix of clients and no failure is more recent than a matching success" do
+    it "sets status to up when there is a mix of clients and no down event is more recent than a matching up event" do
       @mock_log = [
         { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
         { 'timestamp' => 6.minutes.ago.to_s, 'text' => 'Test for Client2:success' },
@@ -179,7 +230,7 @@ describe LogInspector do
       @test_status.active.should == true
     end
 
-    it "reports failure when there is a mix of clients and there is a most-recent failure" do
+    it "sets status to down when there is a mix of clients and there is a most-recent down event" do
       @mock_log = [
         { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
         { 'timestamp' => 6.minutes.ago.to_s, 'text' => 'Test for Client2:failure' },
@@ -192,10 +243,10 @@ describe LogInspector do
       @test_status.active.should == false
     end 
 
-    it "reports failure when there are two different clients and one is failing" do
+    it "sets status to down when there are two different clients and one has a down event with no up event" do
       @mock_log = [
         { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:failure' },
+        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:failure' }
       ]
       @test_status.active = true
       @test_status.should_receive(:save!)
@@ -216,5 +267,14 @@ describe LogInspector do
       lambda { @test_status.save! }.should raise_error
     end
 
+    it "throws an error if the beginning string has a wildcard and the ending string does not" do
+      @test_status = LogInspector::LogStatus.new(:search_string_begin => ['Wildcard [*] pattern'], :search_string_end => ['Regular pattern'])
+      lambda { @test_status.save! }.should raise_error
+    end
+
+    it "throws an error if the ending string has a wildcard and the beginning string does not" do
+      @test_status = LogInspector::LogStatus.new(:search_string_begin => ['Regular pattern'], :search_string_end => ['Wildcard [*] pattern'])
+      lambda { @test_status.save! }.should raise_error
+    end
   end
 end

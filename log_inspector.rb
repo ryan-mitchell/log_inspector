@@ -18,6 +18,7 @@ class LogInspector < SimpleWorker::Base
       :user => @config['loggly']['user'],
       :pass => @config['loggly']['pass'],
     )
+    LogStatus.set_log(@loggly)
 
     cache_all_statuses
 
@@ -38,7 +39,7 @@ class LogInspector < SimpleWorker::Base
               :body => status.status_description,
               :via => :smtp,
               :via_options => {
-                :address => 'smtp.psship.com'
+                :address => 'smtp.gmail.com'
               }
             )
           end
@@ -65,14 +66,21 @@ class LogInspector < SimpleWorker::Base
     end
   end
 
+  # TODO will simpleworker let us pull this class out into another file? it's getting a little bloated
   class LogStatus < AWS::Record::Base
     set_domain_name "LogStatus"
+    string_attr :status_code
+    string_attr :matched
     string_attr :status_name
     string_attr :status_description
     string_attr :search_string_begin, :set => true
     string_attr :search_string_end, :set => true
     integer_attr :status_since
     boolean_attr :active
+
+    def self.set_log(log)
+      @@log = log
+    end
 
     # TODO can these be combined into one validation? 
     validates_each(:search_string_begin) do |record, attr_name, val|
@@ -98,37 +106,47 @@ class LogInspector < SimpleWorker::Base
     end
 
     # returns true, false, or nil if the status is unknown 
-    def wildcard_status
-    
+    def wildcard_status_search
+
       if wildcard_begin and wildcard_end
 
-        all_starts = @loggly.search(wildcard_begin)['data']
-        all_ends = @loggly.search(wildcard_end)['data']
+        all_starts = @@log.search(wildcard_begin)['data']
+        all_ends = @@log.search(wildcard_end)['data']
 
         if all_starts.empty? and all_ends.empty?
           return nil
         end
       
         all_matches = all_starts | all_ends
-
         submatches = extract_submatches(all_starts, wildcard_begin) | extract_submatches(all_ends, wildcard_end)
 
         all_pass = submatches.all? do |sm|
-          successes_for_submatch = all_starts.select {|start| start['text'] == wildcard_begin.sub('[*]', sm) }.sort {|a,b| a['timestamp'] <=> b['timestamp'] }               
-          failures_for_submatch = all_ends.select {|ending| ending['text'] == wildcard_end.sub('[*]', sm) }.sort {|a,b| a['timestamp'] <=> b['timestamp'] }               
-
+  
+          successes_for_submatch = all_starts.select {|start| start['text'].include?  wildcard_begin.sub('[*]', sm)}.sort {|a,b| b['timestamp'] <=> a['timestamp'] }
+          failures_for_submatch = all_ends.select {|ending| ending['text'] == wildcard_end.sub('[*]', sm)}.sort {|a,b| b['timestamp'] <=> a['timestamp'] }               
           #optimize for the most likely case - no failures
           if failures_for_submatch.empty? and not successes_for_submatch.empty?
             passing = true 
-          end
-        
-          if successes_for_submatch.empty? and not failures_for_submatch.empty?
+          elsif successes_for_submatch.empty? and not failures_for_submatch.empty?
             passing = false
-          end
-               
-          if passing.nil?
+          else
             passing = successes_for_submatch.first['timestamp'] > failures_for_submatch.first['timestamp'] 
           end
+
+          row = LogStatus.where("matched = '#{sm}'").first
+          unless row
+            new_attributes = attributes.clone.merge(:status_since => Time.now.to_i, :matched => sm) 
+            new_attributes.delete(:id)
+            row = LogStatus.new(new_attributes)
+            row.save!
+          end
+      
+          if passing
+            row.enable
+          else
+            row.disable
+          end
+           
           passing
         end
       else
@@ -136,16 +154,36 @@ class LogInspector < SimpleWorker::Base
       end
     end
 
-    # returns true, false, or nil if the status is unknown 
-    def pattern_status
-
-    end
-
     def extract_wildcards(patterns)
       patterns.select {|p| p.include? '[*]' }
     end
+
+    def enable
+      unless active?
+        self.status_since = Time.now.to_i
+        self.active = true
+        save!
+      end
+    end
+
+    def disable
+      if active? or active.nil?
+        self.status_since = Time.now.to_i
+        self.active = false
+        save!
+      end
+    end
+
+    def enabled_times
+      get_event_times(search_string_begin)
+    end
+
+    def disabled_times
+      get_event_times(search_string_end)
+    end
     
     private
+
     # returns the wildcard pattern or nil
     def wildcard_begin
       extract_wildcards(search_string_begin).first
@@ -165,130 +203,67 @@ class LogInspector < SimpleWorker::Base
     def end_patterns
       search_string_end.select { |sse| not sse.include? '[*]' }
     end
+
+    def get_wildcard_patterns(search_string_array)
+      search_string_array.select do |search_string|
+        search_string.include? '[*]'
+      end     
+    end
+
+    # Turn the convenience notation used in the UI to the correct regular expression for matching
+    def fix_regexp(original_regexp)
+      # If the wildcard is the last word in the string, we have to assume that it's going
+      # to be followed by a non-word character or the end of the string - otherwise, we trust the pattern to
+      # tell us what comes after it 
+      fixed_matcher = original_regexp.end_with?('[*]') ? '(.*?)\z|\w' : '(.*?)' 
+      original_regexp.sub('[*]', fixed_matcher) 
+    end
+
+    def extract_submatches(matches, original_pattern)
+      matches.map do |m|
+        fixed_regexp = fix_regexp(original_pattern)
+        m['text'].scan(Regexp.new(fixed_regexp))[0][0] # assume there's only one match
+      end
+    end
+
+    def get_event_times(search_string_array)
+      search_string_array.collect do |search_string|
+        response = @@log.search(search_string)
+        if response.kind_of?(Hash) and response['data'].count > 0
+          Time.parse(response['data'].first['timestamp']).to_i
+        else
+          0 # timestamp of 0 is the same as "this has never happened" 
+        end
+      end
+    end
   end
 
   private
   def cache_all_statuses
     @statuses = LogStatus.find(:all)
-    @statuses.each do |status|
-
-      wildcard_check_passes = check_wildcard_status(status)
+    @statuses.select {|s| s.matched.nil? }.each do |status|
+    
+      wildcard_check_passes = status.wildcard_status_search
 
       # if this is a false (not nil) result, no point in continuing - disable the status and skip this iteration
       if not wildcard_check_passes and not wildcard_check_passes.nil?
-        disable(status)
+        status.disable
         next
       end  
 
       # if the result is true and there are no more patterns to check, again, no reason to continue - 
       # enable the status and skip the iteration
       if wildcard_check_passes and status.search_string_begin.empty? and status.search_string_end.empty?
-        enable(status)
+        status.enable
         next
       else # if, after removing wildcard patterns, we still have patterns to check, continue 
-        enabled_times = get_event_times(status.search_string_begin)
-        disabled_times = get_event_times(status.search_string_end)
-
-        if enabled_times.max != 0 or disabled_times.max != 0
-          if enabled_times.max > disabled_times.max
-            enable(status)
+        if status.enabled_times.max != 0 or status.disabled_times.max != 0
+          if status.enabled_times.max > status.disabled_times.max
+            status.enable
           else
-            disable(status)
+            status.disable
           end
         end
-      end
-    end
-  end
-
-  def check_wildcard_status(status)
-
-    # If there is a wildcard search string in the begin strings but not in the end
-    # strings (or vice versa) the wildcard will be treated as regular literal text.
-    wildcard_starts = get_wildcard_patterns(status.search_string_begin)
-    wildcard_endings = get_wildcard_patterns(status.search_string_end)
-
-    unless wildcard_starts.empty? or wildcard_endings.empty?
-
-      wildcard_start = wildcard_starts.first
-      wildcard_end = wildcard_endings.first
-
-      # remove the wildcard patterns from the pattern array so we don't try to match them
-      # like standard patterns
-      status.search_string_begin.delete(wildcard_start)
-      status.search_string_end.delete(wildcard_end)
-
-      all_starts = @loggly.search(wildcard_start)['data']
-      all_ends = @loggly.search(wildcard_end)['data']
-
-      if all_starts.empty? and all_ends.empty?
-        return nil
-      end
-    
-      all_matches = all_starts | all_ends
-
-      submatches = extract_submatches(all_starts, wildcard_start) | extract_submatches(all_ends, wildcard_end)
-
-      all_pass = submatches.all? do |sm|
-        successes_for_submatch = all_starts.select {|start| start['text'] == wildcard_start.sub('[*]', sm) }.sort {|a,b| a['timestamp'] <=> b['timestamp'] }               
-        failures_for_submatch = all_ends.select {|ending| ending['text'] == wildcard_end.sub('[*]', sm) }.sort {|a,b| a['timestamp'] <=> b['timestamp'] }               
-
-        #optimize for the most likely case - no failures
-        if failures_for_submatch.empty? and not successes_for_submatch.empty?
-          passing = true 
-        end
-      
-        if successes_for_submatch.empty? and not failures_for_submatch.empty?
-          passing = false
-        end
-             
-        if passing.nil?
-          passing = successes_for_submatch.first['timestamp'] > failures_for_submatch.first['timestamp'] 
-        end
-        passing
-      end
-    else
-      true # no wildcards to check, so the check passes (in that there can be no failures) 
-    end
-  end
-
-  def enable(status)
-    unless status.active?
-      status.status_since = Time.now.to_i
-      status.active = true
-      status.save!
-    end
-  end
-
-  def disable(status)
-    if status.active? or status.active.nil?
-      status.status_since = Time.now.to_i
-      status.active = false
-      status.save!
-    end
-  end
-
-  def get_wildcard_patterns(search_string_array)
-    search_string_array.select do |search_string|
-      search_string.include? '[*]'
-    end     
-  end
-
-  def extract_submatches(matches, original_pattern)
-    matches.map do |m|
-      match = m['text'] 
-      real_regex = original_pattern.end_with?('[*]') ? '(.*?) ' : '(.*?)'
-      search_string = original_pattern.sub('[*]', real_regex) # TODO fix 
-      match.scan(Regexp.new(search_string))[0][0] # assume there's only one match
-    end
-  end
-
-  def get_event_times(search_string_array)
-    search_string_array.collect do |search_string|
-      response = @loggly.search(search_string)
-      if response.kind_of?(Hash) and response['data'].count > 0
-        DateTime.parse(response['data'].first['timestamp']).to_i
-      else
-        0 # timestamp of 0 is the same as "this has never happened" 
       end
     end
   end
