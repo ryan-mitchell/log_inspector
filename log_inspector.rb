@@ -7,13 +7,13 @@ class LogInspector < SimpleWorker::Base
   attr_accessor :statuses, :config
 
   merge_gem 'aws-sdk'
-  merge_gem 'ruby_loggly'
+  merge_gem 'cloud-logger'
   merge_gem 'pony'
 
 	def run
 
     AWS.config(@config['aws'])
-    @loggly = Loggly.new(
+    @loggly = CloudLogger::Loggly.new(
       :subdomain => @config['loggly']['subdomain'],
       :user => @config['loggly']['user'],
       :pass => @config['loggly']['pass'],
@@ -110,8 +110,8 @@ class LogInspector < SimpleWorker::Base
 
       if wildcard_begin and wildcard_end
 
-        all_starts = @@log.search(wildcard_begin)['data']
-        all_ends = @@log.search(wildcard_end)['data']
+        all_starts = @@log.search(wildcard_begin)
+        all_ends = @@log.search(wildcard_end)
 
         if all_starts.empty? and all_ends.empty?
           return nil
@@ -122,15 +122,16 @@ class LogInspector < SimpleWorker::Base
 
         all_pass = submatches.all? do |sm|
   
-          successes_for_submatch = all_starts.select {|start| start['text'].include?  wildcard_begin.sub('[*]', sm)}.sort {|a,b| b['timestamp'] <=> a['timestamp'] }
-          failures_for_submatch = all_ends.select {|ending| ending['text'] == wildcard_end.sub('[*]', sm)}.sort {|a,b| b['timestamp'] <=> a['timestamp'] }               
+          successes_for_submatch = all_starts.select {|start| start.text.include?  wildcard_begin.sub('[*]', sm)}.sort {|a,b| b.timestamp <=> a.timestamp }
+          failures_for_submatch = all_ends.select {|ending| ending.text == wildcard_end.sub('[*]', sm)}.sort {|a,b| b.timestamp <=> a.timestamp }               
+
           #optimize for the most likely case - no failures
           if failures_for_submatch.empty? and not successes_for_submatch.empty?
             passing = true 
           elsif successes_for_submatch.empty? and not failures_for_submatch.empty?
             passing = false
           else
-            passing = successes_for_submatch.first['timestamp'] > failures_for_submatch.first['timestamp'] 
+            passing = successes_for_submatch.first.timestamp > failures_for_submatch.first.timestamp 
           end
 
           row = LogStatus.where("matched = '#{sm}'").first
@@ -222,15 +223,15 @@ class LogInspector < SimpleWorker::Base
     def extract_submatches(matches, original_pattern)
       matches.map do |m|
         fixed_regexp = fix_regexp(original_pattern)
-        m['text'].scan(Regexp.new(fixed_regexp))[0][0] # assume there's only one match
+        m.text.scan(Regexp.new(fixed_regexp))[0][0] # assume there's only one match
       end
     end
 
     def get_event_times(search_string_array)
       search_string_array.collect do |search_string|
         response = @@log.search(search_string)
-        if response.kind_of?(Hash) and response['data'].count > 0
-          Time.parse(response['data'].first['timestamp']).to_i
+        if response.kind_of?(Array) and response.count > 0
+          response.first.timestamp.to_i
         else
           0 # timestamp of 0 is the same as "this has never happened" 
         end

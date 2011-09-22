@@ -4,8 +4,8 @@ require 'active_support/core_ext'
 describe LogInspector do
 
   before(:each) do
-    Loggly.any_instance.stub(:search) do |query|
-      {'data' => @mock_log.select {|log_entry| Regexp.new(query.sub('[*]', '.*?')) =~ log_entry['text'] } }
+    CloudLogger::Loggly.any_instance.stub(:search) do |query|
+      @mock_log.select {|log_entry| Regexp.new(query.sub('[*]', '.*?')) =~ log_entry.text }
     end
     @log_inspector = LogInspector.new
     @log_inspector.config = YAML.load_file('../config.yml')
@@ -26,7 +26,7 @@ describe LogInspector do
 
       before(:each) do
         @mock_log = [
-          {'timestamp' => 5.minutes.ago.to_s, 'text' => 'Not a matching log event' }
+          CloudLogger::Event.new('Not a matching log event', 5.minutes.ago),
         ]
       end
 
@@ -47,8 +47,8 @@ describe LogInspector do
    
       before(:each) do
         @mock_log = [
-          {'timestamp' => 5.minutes.ago.to_s, 'text' => @test_status.search_string_begin.first },
-          {'timestamp' => 10.minutes.ago.to_s, 'text' => @test_status.search_string_end.first }
+          CloudLogger::Event.new(@test_status.search_string_begin.first, 5.minutes.ago),
+          CloudLogger::Event.new(@test_status.search_string_end.first, 10.minutes.ago)
         ]
       end 
 
@@ -76,8 +76,8 @@ describe LogInspector do
 
       before(:each) do
         @mock_log = [
-          {'timestamp' => 5.minutes.ago.to_s, 'text' => @test_status.search_string_end.first },
-          {'timestamp' => 10.minutes.ago.to_s, 'text' => @test_status.search_string_begin.first }
+          CloudLogger::Event.new(@test_status.search_string_end.first, 5.minutes.ago),
+          CloudLogger::Event.new(@test_status.search_string_begin.first, 10.minutes.ago)
         ]
       end 
 
@@ -117,10 +117,15 @@ describe LogInspector do
       LogInspector::LogStatus.should_receive(:where).any_number_of_times.and_return {|query| query == "matched = 'Client1'" ? [@client_status] : [] }
     end 
 
+    it "does not throw an error if the log has no wildcard matches" do
+        @mock_log = []
+        lambda { @log_inspector.run }.should_not raise_error
+    end
+
     it "creates additional status rows for each new match of the wildcard pattern" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:success' }     
+        CloudLogger::Event.new('Test for Client1:success', 5.minutes.ago),
+        CloudLogger::Event.new('Test for Client2:success', 10.minutes.ago)
       ]
       @fake_status = LogInspector::LogStatus.new
       LogInspector::LogStatus.should_receive(:new).once.and_return(@fake_status) # 1 new status should be created, the other one already exists
@@ -130,9 +135,9 @@ describe LogInspector do
 
     it "correctly compares the most recent success to the most recent failure" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 7.minutes.ago.to_s, 'text' => 'Test for Client1:failure' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client1:success' }     
+        CloudLogger::Event.new('Test for Client1:success', 5.minutes.ago),
+        CloudLogger::Event.new('Test for Client1:failure', 7.minutes.ago),
+        CloudLogger::Event.new('Test for Client1:success', 10.minutes.ago)
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
@@ -140,10 +145,10 @@ describe LogInspector do
       @test_status.active.should == true
     end
 
-    it "updates an existing row for each match of the wildcard pattern", :failing => true do
+    it "updates an existing row for each match of the wildcard pattern" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:success' }     
+        CloudLogger::Event.new('Test for Client1:success', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client2:success', 10.minutes.ago.to_s)     
       ]
       @client_status.should_receive(:save!)
       @log_inspector.run
@@ -151,8 +156,8 @@ describe LogInspector do
 
     it "sets status to up when there are no down events in the log" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:success' }     
+        CloudLogger::Event.new('Test for Client1:success', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client2:success', 10.minutes.ago.to_s)     
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
@@ -162,8 +167,8 @@ describe LogInspector do
 
     it "works correctly when there is additional text in the log entry" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success and more text' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:success and more text' }     
+        CloudLogger::Event.new('Test for Client1:success and more text', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client2:success and more text', 10.minutes.ago.to_s)     
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
@@ -175,8 +180,8 @@ describe LogInspector do
       @test_status.stub(:search_string_begin).and_return ['Test for success:[*]']
       @test_status.stub(:search_string_end).and_return ['Test for failure:[*]']
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for success:Client1' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for success:Client2' }     
+        CloudLogger::Event.new('Test for success:Client1', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for success:Client2', 10.minutes.ago.to_s)     
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
@@ -186,8 +191,8 @@ describe LogInspector do
 
     it "sets status to up when there is one client which has a most recent up event" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client1:failure' }     
+        CloudLogger::Event.new('Test for Client1:success', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client1:failure', 10.minutes.ago.to_s)     
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
@@ -197,8 +202,8 @@ describe LogInspector do
 
     it "sets status to down when the are no up events in the log" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:failure' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:failure' }     
+        CloudLogger::Event.new('Test for Client1:failure', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client2:failure', 10.minutes.ago.to_s)     
       ]
       @test_status.active = true
       @test_status.should_receive(:save!)
@@ -208,8 +213,8 @@ describe LogInspector do
 
     it "sets status to down when there is one client which has a most recent down event" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:failure' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client1:success' }     
+        CloudLogger::Event.new('Test for Client1:failure', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client1:success', 10.minutes.ago.to_s)     
       ]
       @test_status.active = true
       @test_status.should_receive(:save!)
@@ -219,10 +224,10 @@ describe LogInspector do
 
     it "sets status to up when there is a mix of clients and no down event is more recent than a matching up event" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 6.minutes.ago.to_s, 'text' => 'Test for Client2:success' },
-        { 'timestamp' => 7.minutes.ago.to_s, 'text' => 'Test for Client1:failure' },     
-        { 'timestamp' => 8.minutes.ago.to_s, 'text' => 'Test for Client2:failure' }     
+        CloudLogger::Event.new('Test for Client1:success', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client2:success', 6.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client1:failure', 7.minutes.ago.to_s),     
+        CloudLogger::Event.new('Test for Client2:failure', 8.minutes.ago.to_s)     
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
@@ -232,10 +237,10 @@ describe LogInspector do
 
     it "sets status to down when there is a mix of clients and there is a most-recent down event" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 6.minutes.ago.to_s, 'text' => 'Test for Client2:failure' },
-        { 'timestamp' => 7.minutes.ago.to_s, 'text' => 'Test for Client1:failure' },     
-        { 'timestamp' => 8.minutes.ago.to_s, 'text' => 'Test for Client2:success' }     
+        CloudLogger::Event.new('Test for Client1:success', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client2:failure', 6.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client1:failure', 7.minutes.ago.to_s),     
+        CloudLogger::Event.new('Test for Client2:success', 8.minutes.ago.to_s)     
       ]
       @test_status.active = true
       @test_status.should_receive(:save!)
@@ -245,8 +250,8 @@ describe LogInspector do
 
     it "sets status to down when there are two different clients and one has a down event with no up event" do
       @mock_log = [
-        { 'timestamp' => 5.minutes.ago.to_s, 'text' => 'Test for Client1:success' },
-        { 'timestamp' => 10.minutes.ago.to_s, 'text' => 'Test for Client2:failure' }
+        CloudLogger::Event.new('Test for Client1:success', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for Client2:failure', 10.minutes.ago.to_s)
       ]
       @test_status.active = true
       @test_status.should_receive(:save!)
