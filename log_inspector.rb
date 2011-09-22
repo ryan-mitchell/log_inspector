@@ -231,7 +231,7 @@ class LogInspector < SimpleWorker::Base
       search_string_array.collect do |search_string|
         response = @@log.search(search_string)
         if response.kind_of?(Array) and response.count > 0
-          response.first.timestamp.to_i
+          response.first.timestamp.to_time.to_i
         else
           0 # timestamp of 0 is the same as "this has never happened" 
         end
