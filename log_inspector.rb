@@ -121,7 +121,7 @@ class LogInspector < SimpleWorker::Base
         submatches = extract_submatches(all_starts, wildcard_begin) | extract_submatches(all_ends, wildcard_end)
 
         all_pass = submatches.all? do |sm|
-  
+
           successes_for_submatch = all_starts.select {|start| start.text.include?  wildcard_begin.sub('[*]', sm)}.sort {|a,b| b.timestamp <=> a.timestamp }
           failures_for_submatch = all_ends.select {|ending| ending.text == wildcard_end.sub('[*]', sm)}.sort {|a,b| b.timestamp <=> a.timestamp }               
 
@@ -216,7 +216,7 @@ class LogInspector < SimpleWorker::Base
       # If the wildcard is the last word in the string, we have to assume that it's going
       # to be followed by a non-word character or the end of the string - otherwise, we trust the pattern to
       # tell us what comes after it 
-      fixed_matcher = original_regexp.end_with?('[*]') ? '(.*?)\z|\w' : '(.*?)' 
+      fixed_matcher = original_regexp.end_with?('[*]') ? '(.+?)\b' : '(.+?)' 
       original_regexp.sub('[*]', fixed_matcher) 
     end
 

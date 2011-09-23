@@ -5,7 +5,7 @@ describe LogInspector do
 
   before(:each) do
     CloudLogger::Loggly.any_instance.stub(:search) do |query|
-      @mock_log.select {|log_entry| Regexp.new(query.sub('[*]', '.*?')) =~ log_entry.text }
+      @mock_log.select {|log_entry| Regexp.new(query.sub('[*]', '.+?')) =~ log_entry.text }
     end
     @log_inspector = LogInspector.new
     @log_inspector.config = YAML.load_file('../config.yml')
@@ -169,6 +169,19 @@ describe LogInspector do
       @mock_log = [
         CloudLogger::Event.new('Test for Client1:success and more text', 5.minutes.ago.to_s),
         CloudLogger::Event.new('Test for Client2:success and more text', 10.minutes.ago.to_s)     
+      ]
+      @test_status.active = false
+      @test_status.should_receive(:save!)
+      @log_inspector.run
+      @test_status.active.should == true
+    end
+
+    it "works correctly when the wildcard is at the end of the string and there is additional text", :failing => true do
+      @test_status.stub(:search_string_begin).and_return ['Test for success:[*]']
+      @test_status.stub(:search_string_end).and_return ['Test for failure:[*]']
+      @mock_log = [
+        CloudLogger::Event.new('Test for success:Client1 and more text', 5.minutes.ago.to_s),
+        CloudLogger::Event.new('Test for success:Client2 and more text', 10.minutes.ago.to_s)     
       ]
       @test_status.active = false
       @test_status.should_receive(:save!)
